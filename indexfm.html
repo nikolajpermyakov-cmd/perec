@@ -1041,7 +1041,7 @@ aside #dl-xlsx { font-size: 17px !important; height: 48px !important; }
     "tax": "УСН (Д)",
     "startMonth": 11,
     "vatIn": 0,
-    "rentRate": 1500,
+    "rentRate": 2000,
     "avgCheck": 250000,
     "planPerEmployee": null,
     "tourShare": 0.92,
@@ -1207,7 +1207,8 @@ aside #dl-xlsx { font-size: 17px !important; height: 48px !important; }
       20,
       35,
       45,
-      55
+      55,
+      65
     ],
     "deposit_months": 2,
     "first_month_rent_in_pnl": 0
@@ -1712,15 +1713,19 @@ const FM = (() => {
     // Без собственника стол руководителя можно добавить вручную.
     let m = Math.max(0, Math.min(teamMax(), Number(s.managers) || 0));
     if (!owner && m === 0) m = 1; // без собственника нужен хотя бы один сотрудник
-    const headDesk = isOnline ? 0 : (owner ? (m >= 1 ? 1 : 0) : (Number(s.headDesk) ? 1 : 0));
-    const workZones = isOnline ? 0 : Math.max(1, Math.min(3, m + (owner && !headDesk ? 1 : 0)));
-    const heads = m + (owner || headDesk ? 1 : 0);
+    // Наёмный управляющий всегда сидит за столом руководителя; тогда собственник (если продаёт) занимает рабочую зону.
+    const hiredMgr = s.managerRole === 'наёмный сотрудник';
+    const deskAuto = !isOnline && (hiredMgr || (owner && m >= 1));
+    const headDesk = isOnline ? 0 : (deskAuto ? 1 : (Number(s.headDesk) ? 1 : 0));
+    const ownerInZone = owner && (hiredMgr || !headDesk);
+    const workZones = isOnline ? 0 : Math.max(1, Math.min(4, m + (ownerInZone ? 1 : 0)));
+    const heads = hiredMgr ? m + (owner ? 1 : 0) + 1 : m + (owner || headDesk ? 1 : 0);
     const area = isOnline ? 0 : (cfg.office.area_by_headcount[heads] ?? cfg.office.area_by_headcount[cfg.office.area_by_headcount.length - 1]);
     const zones = isOnline ? 0 : workZones - 1; // доп. рабочие зоны, 'Инвестиции'!C56
     const workers = m + (owner ? 1 : 0); // продающие (собственник + наёмные), 'Продажи'!D11/C23
     const laptops = isOnline ? m : heads; // 'Инвестиции'!C71: в онлайне ноутбуки нужны наёмным сотрудникам
     const plan = s.planPerEmployee != null ? Number(s.planPerEmployee) : (isOnline ? cfg.sales.plan_per_employee.online : cfg.sales.plan_per_employee.offline);
-    return { col, isOnline, isGreen, isHot, owner, m, heads, area, zones, workZones, headDesk, workers, laptops, plan };
+    return { col, isOnline, isGreen, isHot, owner, m, heads, area, zones, workZones, headDesk, deskAuto, hiredMgr, workers, laptops, plan };
   }
 
   function investments(s, cfg, d) {
@@ -1760,8 +1765,8 @@ const FM = (() => {
       { key: 'hot', name: 'ПО, интеграция с УК и маркетинг', value: E24 },
       { key: 'furniture_base', name: 'Базовый комплект офиса (1-я рабочая зона)', value: E34 },
       ...(d.isOnline ? [] : [{ key: 'furniture_extra', name: 'Дополнительная рабочая зона', value: E56, qty: d.zones, unit: inv.extra_zone.price * retail, qtyKey: 'zones_ro' }]),
-      ...(d.isOnline ? [] : [{ key: 'furniture_head', name: 'Стол руководителя', value: E65, qty: C65, unit: inv.head_furniture.price * retail, qtyKey: d.owner ? 'desk_ro' : 'desk' }]),
-      { key: 'deposit', name: 'Аренда помещения за первый и последний месяц', value: E7 },
+      ...(d.isOnline ? [] : [{ key: 'furniture_head', name: 'Стол руководителя', value: E65, qty: C65, unit: inv.head_furniture.price * retail, qtyKey: d.deskAuto ? 'desk_ro' : 'desk' }]),
+      { key: 'deposit', name: 'Аренда за 1-й и последний месяц', value: E7, rent: !d.isOnline },
       ...(d.isOnline ? [] : [{ key: 'launcher', name: 'Выезд специалиста по запуску', value: E50, qty: s.launcher === 'Да' ? 1 : 0, unit: inv.launcher.price, qtyKey: 'launcher' }]),
       ...(d.isOnline ? [] : [{ key: 'sign', name: 'Вывеска', value: sign, qty: O.sign.qty, unit: O.sign.price, qtyKey: 'o:sign' }]),
       { key: 'laptop', name: 'Ноутбук', value: laptops, qty: O.laptop.qty, unit: O.laptop.price, qtyKey: 'o:laptop' },
@@ -2066,7 +2071,30 @@ const FM = (() => {
     const files = fflate.unzipSync(templateU8);
     const P = (p) => dec(files[p]);
     const W = (p, s) => { files[p] = enc(s); };
-    const SH = { title: 'xl/worksheets/sheet1.xml', inv: 'xl/worksheets/sheet5.xml', exp: 'xl/worksheets/sheet6.xml', sales: 'xl/worksheets/sheet7.xml', pnl: 'xl/worksheets/sheet8.xml' };
+    const SH = { title: 'xl/worksheets/sheet1.xml', inv: 'xl/worksheets/sheet5.xml', exp: 'xl/worksheets/sheet6.xml', sales: 'xl/worksheets/sheet7.xml', pnl: 'xl/worksheets/sheet8.xml', season: 'xl/worksheets/sheet9.xml' };
+    const P100 = (x) => `${Math.round(Number(x) * 100000) / 1000}%`; // 0.302 → "30.2%"
+    const OWN = `IF('Титул'!$D$14="Да",1,0)+'Титул'!$D$15`; // продающих: собственник + наёмные
+    // Настройки из окна «Базовые параметры» → скрытый лист «Сезон», AM2:AN…; видимые листы ссылаются на них формулами
+    const tr = cfg.tax.rates, st = cfg.staff;
+    const CFG_ROWS = [
+      ['plan_on', 'План продаж на сотрудника, онлайн', cfg.sales.plan_per_employee.online],
+      ['plan_off', 'План продаж на сотрудника, офлайн', cfg.sales.plan_per_employee.offline],
+      ['lead', 'Стоимость 1 заявки (текущий формат)', R.leadPrice],
+      ['conv', 'Конверсия заявок в продажу', cfg.leads.conversion],
+      ['share', 'Доля заявок от УК для офлайна', cfg.leads.offline_lead_share],
+      ['mgr', 'Оклад менеджера', st.manager_salary],
+      ['staff_ins', 'Страховые взносы за персонал', st.staff_insurance_rate],
+      ['head', 'Оклад наёмного управляющего', st.hired_manager_salary],
+      ['head_bonus', 'Бонус управляющего, доля ВП', st.hired_manager_bonus],
+      ['head_ins', 'Взносы за управляющего', st.mgmt_insurance_rate],
+      ['usn_d', 'Ставка УСН (Д)', tr['УСН (Д)']],
+      ['usn_dr', 'Ставка УСН (Д-Р)', tr['УСН (Д-Р)']],
+      ['osno_ooo', 'Ставка ОСНО, ООО', tr['ОСНО_ООО']],
+      ['osno_ip', 'Ставка ОСНО, ИП', tr['ОСНО_ИП']],
+      ['ausn_d', 'Ставка АУСН (Д)', tr['АУСН (Д)']],
+      ['ausn_dr', 'Ставка АУСН (Д-Р)', tr['АУСН (Д-Р)']]
+    ];
+    const CF = (key) => `'Сезон'!$AN$${CFG_ROWS.findIndex((x) => x[0] === key) + 2}`;
     const O = cfg.custom_outside_excel;
     const online = R.d.isOnline;
     const ONLINE_F = "OR('Титул'!$D$13='Сезон'!$I$1,'Титул'!$D$13='Сезон'!$J$1)";
@@ -2086,7 +2114,27 @@ const FM = (() => {
     t = setCell(t, 'B23', { s: 'Каникулы по роялти' }, styleOf(t, 'B22'));
     t = setCell(t, 'D23', { s: Number(S.royaltyHoliday) ? 'Да' : 'Нет' }, styleOf(t, 'D18'));
     t = setCell(t, 'F23', { s: 'Да — роялти за 1-й месяц работы не начисляется' }, styleOf(t, 'F22'));
+    { // ставки налогов — из блока настроек на скрытом листе «Сезон»
+      let f = getFormula(t, 'D20');
+      if (f) {
+        f = f.replace('"АУСН (Д)",8%', `"АУСН (Д)",${CF('ausn_d')}`).replace('"АУСН (Д-Р)",20%', `"АУСН (Д-Р)",${CF('ausn_dr')}`)
+          .replace("'Сезон'!A24,25%,15%)", `'Сезон'!A24,${CF('osno_ooo')},${CF('osno_ip')})`).replace('"УСН (Д)",6%,15%)', `"УСН (Д)",${CF('usn_d')},${CF('usn_dr')})`);
+        t = setCell(t, 'D20', { f });
+      }
+    }
     W(SH.title, t);
+
+    // ---- Сезон (скрытый лист): сезонность, паушальный взнос, роялти — из окна настроек
+    let se = P(SH.season);
+    cfg.seasonality.coef.forEach((c, i) => { se = setCell(se, 'C' + (i + 2), { n: Number(c) }); se = putCell(se, 'D' + (i + 2), { n: Math.round(Number(c) * 100) }); });
+    [['I', 'Онлайн зеленый перец'], ['J', 'Онлайн жгучий перец'], ['K', 'Офлайн зеленый перец'], ['L', 'Офлайн жгучий перец']].forEach(([col, f]) => { se = setCell(se, col + '2', { n: Number(cfg.paushal[f]) }); });
+    se = setCell(se, 'J3', { n: Number(cfg.royalty.rule['Онлайн жгучий перец'].pct) });
+    se = setCell(se, 'L3', { n: Number(cfg.royalty.rule['Офлайн жгучий перец'].pct) });
+    cfg.options.population.forEach((pop, i) => { const v = cfg.royalty.by_population[pop]; if (v) ['I', 'J', 'K', 'L'].forEach((col, k) => { se = setCell(se, col + (7 + i), { n: Number(v[k]) }); }); });
+    // Окно настроек интерактивной модели — одним блоком на скрытом листе (столбцы AM:AN, правее занятой области A:AK)
+    se = putCell(se, 'AM1', { s: 'Настройки интерактивной модели' });
+    CFG_ROWS.forEach(([key, label, val], i) => { const r = i + 2; se = putCell(se, 'AM' + r, { s: label }); se = putCell(se, 'AN' + r, { n: Number(val) }); });
+    W(SH.season, se);
 
     // ---- Инвестиции
     let iv = P(SH.inv);
@@ -2122,7 +2170,12 @@ const FM = (() => {
     let ex = P(SH.exp);
     ex = setCell(ex, 'E13', { n: Number(S.tourCostRatio) });
     ex = setCell(ex, 'E14', { n: Number(S.extraCostRatio) });
-    if (S.leadMode === 'retail') ex = setCell(ex, 'E18', { n: Number(O.retail_lead_price) });
+    ex = setCell(ex, 'E18', { f: CF('lead') }); // цена заявки: опт/рынок и правки в настройках
+    ex = setCell(ex, 'D16', { f: CF('mgr') });
+    ex = setCell(ex, 'C17', { f: CF('staff_ins') });
+    { const f = getFormula(ex, 'D7'); if (f) ex = setCell(ex, 'D7', { f: f.replace(',50000,0)', `,${CF('head')},0)`) }); }
+    { const f = getFormula(ex, 'E7'); if (f) ex = setCell(ex, 'E7', { f: f.replace(',0.01,0)', `,${CF('head_bonus')},0)`) }); }
+    { const f = getFormula(ex, 'C8'); if (f) ex = setCell(ex, 'C8', { f: f.replace('0%,30.2%)', `0%,${CF('head_ins')})`) }); }
     W(SH.exp, ex);
 
     // ---- Продажи
@@ -2130,7 +2183,11 @@ const FM = (() => {
     sl = setCell(sl, 'C6', { n: Number(S.avgCheck) });
     sl = setCell(sl, 'D6', { n: Number(S.tourShare) });
     sl = setCell(sl, 'D7', { n: Math.round((1 - Number(S.tourShare)) * 1e6) / 1e6 });
-    if (S.planPerEmployee != null) sl = setCell(sl, 'D10', { n: Number(S.planPerEmployee) });
+    sl = setCell(sl, 'D10', { f: `IF(${ONLINE_F},${CF('plan_on')},${CF('plan_off')})` }); // план на сотрудника — из настроек (онлайн/офлайн)
+    // продающих = собственник + наёмные во всех форматах (в онлайне тоже можно добавить сотрудников)
+    const WK_OLD = `IF(OR('Титул'!$D$13='Сезон'!$I$1,'Титул'!$D$13='Сезон'!$J$1),1,IF('Титул'!$D$14="Да",1,0)+'Титул'!$D$15)`;
+    { const f = getFormula(sl, 'D11'); if (f) sl = setCell(sl, 'D11', { f: f.split(WK_OLD).join(`(${OWN})`) }); }
+    for (const c of cols24()) { const f = getFormula(sl, c + '23'); if (f) sl = setCell(sl, c + '23', { f: f.split(WK_OLD).join(`(${OWN})`) }); }
     sl = setCell(sl, 'D12', { n: Number(S.rampMonths) });
     sl = setCell(sl, 'D13', { n: Number(S.firstMonthLoad) });
     sl = setCell(sl, 'D14', { n: Number(S.growthAfterPlan) });
@@ -2148,7 +2205,16 @@ const FM = (() => {
     const f16 = getFormula(pl, 'C16'); if (f16) pl = setCell(pl, 'C16', { f: `IF('Титул'!$D$23="Да",0,${f16})` });
     for (const c of cols24()) {
       const f = getFormula(pl, c + '26'); if (!f) continue;
-      pl = setCell(pl, c + '26', { f: f.split(`'Продажи'!${c}23`).join(`('Продажи'!${c}23/(1+'Продажи'!$D$15))`) });
+      pl = setCell(pl, c + '26', { f: f.split(`'Продажи'!${c}23`).join(`('Продажи'!${c}23/(1+'Продажи'!$D$15))`)
+        .split('/20%').join('/' + CF('conv')).split('*60%*').join('*' + CF('share') + '*') });
+    }
+    // Год месяца: TEXT(дата,"ГГГГ") работает только в русском Excel — заменяем на формулу, не зависящую от языка программы
+    // (в шаблоне это общая формула C8:Z8, поэтому переписываем каждую ячейку целиком)
+    for (const c of cols24()) pl = setCell(pl, c + '8', { f: `TEXT(YEAR(${c}7),"0")` });
+    // Бонус менеджеров: ВП на одного продающего. Офлайн — ВП / рабочие места (как в исходнике), онлайн — ВП / число продающих
+    for (const c of cols24()) {
+      const f = getFormula(pl, c + '22'); if (!f) continue;
+      pl = setCell(pl, c + '22', { f: f.split(`(1+'Инвестиции'!$C$56)`).join(`IF(${ONLINE_F},MAX(1,${OWN}),1+'Инвестиции'!$C$56)`) });
     }
     W(SH.pnl, pl);
 
@@ -2165,6 +2231,34 @@ const FM = (() => {
     }
     W('xl/worksheets/sheet2.xml', gs);
     for (const p of ['xl/charts/chart1.xml', 'xl/charts/chart2.xml']) if (files[p]) W(p, ganttChart(g.stages.length, g.stages));
+
+    // ---- Салатовая заливка строк «Валовая прибыль» (13) и «Чистая прибыль» (37) на листе «Прибыль и окупаемость»
+    {
+      let stx = P('xl/styles.xml');
+      const fillsM = stx.match(/<fills count="(\d+)">([\s\S]*?)<\/fills>/);
+      const fillId = Number(fillsM[1]);
+      stx = stx.replace(fillsM[0], `<fills count="${fillId + 1}">${fillsM[2]}<fill><patternFill patternType="solid"><fgColor rgb="FFDCEFB4"/><bgColor rgb="FFDCEFB4"/></patternFill></fill></fills>`);
+      const xfsM = stx.match(/<cellXfs count="(\d+)">([\s\S]*?)<\/cellXfs>/);
+      const xfs = xfsM[2].match(/<xf [^>]*?(?:\/>|>[\s\S]*?<\/xf>)/g);
+      const added = [], map = {};
+      const greenOf = (sid) => {
+        if (map[sid] != null) return map[sid];
+        let xf = xfs[Number(sid)] || '<xf borderId="0" fillId="0" fontId="0" numFmtId="0" xfId="0"/>';
+        xf = xf.replace(/fillId="\d+"/, `fillId="${fillId}"`);
+        if (!/applyFill=/.test(xf)) xf = xf.replace('<xf ', '<xf applyFill="1" ');
+        added.push(xf); map[sid] = xfs.length + added.length - 1; return map[sid];
+      };
+      const colsBA = ['B', ...cols24(), 'AA'];
+      for (const r of [13, 37]) for (const c of colsBA) {
+        const ref = c + r, m = pl.match(cellRe(ref)); if (!m) continue;
+        const sid = (m[1].match(/s="(\d+)"/) || [, '0'])[1];
+        const ns = greenOf(sid);
+        pl = pl.replace(cellRe(ref), (all, attrs, inner) => all.replace(/^<c r="[A-Z]+\d+"[^>]*?(\/?>)/, (h, end) => `<c r="${ref}"${attrs.replace(/\s*s="\d+"/, '').replace(/\/$/, '')} s="${ns}"${end}`));
+      }
+      stx = stx.replace(xfsM[0], `<cellXfs count="${xfs.length + added.length}">${xfsM[2]}${added.join('')}</cellXfs>`);
+      W('xl/styles.xml', stx);
+    }
+    W(SH.pnl, pl);
 
     // ---- Пересчёт при открытии: убираем устаревшие кэш-значения формул
     for (const p of Object.keys(files)) if (/^xl\/worksheets\/sheet\d+\.xml$/.test(p)) W(p, stripCache(P(p)));
@@ -2797,6 +2891,7 @@ window.__XLSX_TPL='UEsDBBQACAgIAEIJVF0AAAAAAAAAAAAAAAAUAAAAeGwvdGFibGVzL3RhYmxlM
     // Цена позиции «Прочих расходов» — пересчёт по Enter или при уходе с поля
     $('#inv-table').addEventListener('change', (e) => {
       const inp = e.target.closest('.inv-pin'); if (!inp) return;
+      if (inp.dataset.pk === 'rent') { const v = Number(inp.value.replace(/\s/g, '')); set({ rentRate: v > 0 ? v : CFG.defaults.rentRate }); return; }
       const op = Object.assign({}, S.op || {}); const v = inp.value.replace(/\s/g, '');
       if (v === '') delete op[inp.dataset.pk]; else op[inp.dataset.pk] = Math.max(0, Number(v) || 0);
       set({ op });
@@ -2904,6 +2999,12 @@ window.__XLSX_TPL='UEsDBBQACAgIAEIJVF0AAAAAAAAAAAAAAAAUAAAAeGwvdGFibGVzL3RhYmxlM
       const name = l.name.replace(' («Запускатор»)', '');
       if (!isAcc) {
         const fs = many ? 20 : 22.5, fv = many ? 21 : 23.5;
+        if (l.rent) {
+          // Аренда: площадь × редактируемая ставка за м² × месяцы депозита
+          const dm = CFG.office.deposit_months;
+          const rentCalc = `<span class="inv-qty"><span class="inv-qx" style="min-width:0">${R.d.area} м² × <input class="inv-pin num" data-pk="rent" type="text" inputmode="numeric" value="${fmt(S.rentRate)}"> ₽/м² × ${dm} мес.</span></span>`;
+          return `<div class="row-line inv-orow" style="${rowPad}"><span style="color:var(--text);font-size:${fs}px;white-space:nowrap">${name}</span>${rentCalc}<span class="num font-bold flex-none text-right" style="min-width:130px;color:var(--ink);font-size:${fv}px">${rub(l.value)}</span></div>`;
+        }
         return `<div class="row-line inv-orow" style="${rowPad}"><span style="color:var(--text);font-size:${fs}px">${name}</span>${l.qty != null ? qtyHtml(l) : ''}<span class="num font-bold flex-none text-right" style="min-width:130px;color:${l.value ? 'var(--ink)' : 'var(--faint)'};font-size:${fv}px">${rub(l.value)}</span></div>`;
       }
       const bodyHtml = accRenderers[l.key]();
